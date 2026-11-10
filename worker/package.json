@@ -1,0 +1,20 @@
+{
+  "name": "paypilot-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "npm --prefix .. run build && wrangler deploy",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry"
+  },
+  "dependencies": {
+    "jose": "^5.10.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261109.1",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.159.0"
+  }
+}

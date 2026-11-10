@@ -1,0 +1,56 @@
+# PayPilot API + web app on Cloudflare Workers (free plan).
+# Secrets are set with `npx wrangler secret put NAME` — never in this file.
+name = "paypilot"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve the built React app; /api/* goes to the Worker first.
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# Reuse the Firebase Functions source by swapping firebase-* imports for Worker shims.
+[alias]
+"firebase-admin/app" = "./src/shims/app.ts"
+"firebase-admin/firestore" = "./src/shims/firestore.ts"
+"firebase-functions/v2/https" = "./src/shims/https.ts"
+"firebase-functions/v2/scheduler" = "./src/shims/scheduler.ts"
+"firebase-functions/v2/firestore" = "./src/shims/triggers.ts"
+"firebase-functions/params" = "./src/shims/params.ts"
+
+# Free plan allows 5 cron triggers per account. These replace Cloud Scheduler:
+#   */15 → change sweep (replaces Firestore triggers), PayPal sync, webhook retries, rate-limit cleanup
+#   hourly → automations scheduler (overdue invoices, renewals, briefings)
+#   03:30 UTC → nightly 90-day PayPal reconciliation
+[triggers]
+crons = ["*/15 * * * *", "0 * * * *", "30 3 * * *"]
+
+[vars]
+FIREBASE_PROJECT_ID = "paypilot-afc59"
+# Public URL of this Worker (it serves both the app and the API). Update after first deploy
+# if your workers.dev subdomain differs, or when you attach a custom domain.
+APP_BASE_URL = "https://paypilot.web.app"
+API_BASE_URL = "https://paypilot.cadinlafon.workers.dev"
+ALLOWED_ORIGINS = "https://paypilot.web.app,https://paypilot.firebaseapp.com,http://localhost:5320,http://localhost:5321"
+# Free models only (":free" ids cost nothing). The server rejects any other model while ONLY_FREE_MODELS = "true".
+OPENROUTER_DEFAULT_MODEL = "nvidia/nemotron-3.5-super-vl:free"
+ONLY_FREE_MODELS = "true"
+OPENROUTER_ALLOWED_MODELS = "nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3.5-lightning:free,google/gemma-4-31b-it:free,google/gemma-4-26b-a4b-it:free"
+FX_PROVIDER = "frankfurter"
+# Live = your own PayPal business account via a Live REST app. Set "false" to allow Sandbox only.
+PAYPAL_LIVE_ENABLED = "true"
+# Keep AI/analytics data loads small enough for the free plan's CPU limit.
+DATASET_TX_LIMIT = "1000"
+EMAILJS_SERVICE_ID = "service_hhsy35q"
+EMAILJS_PUBLIC_KEY = "CnFo1Rsdnl3BY9_uS"
+EMAILJS_TEMPLATE_INVOICE = ""
+EMAILJS_TEMPLATE_REMINDER = ""
+# One "PayPilot" template serves every email type; empty template IDs below fall back to it.
+EMAILJS_TEMPLATE_CUSTOMER = "template_r67co3i"
+EMAILJS_TEMPLATE_BUSINESS = ""
+EMAILJS_TEMPLATE_AUTOMATION = ""
+B2_BUCKET_ID = ""
+B2_BUCKET_NAME = ""

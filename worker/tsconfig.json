@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "firebase-admin/app": ["./src/shims/app.ts"],
+      "firebase-admin/firestore": ["./src/shims/firestore.ts"],
+      "firebase-functions/v2/https": ["./src/shims/https.ts"],
+      "firebase-functions/v2/scheduler": ["./src/shims/scheduler.ts"],
+      "firebase-functions/v2/firestore": ["./src/shims/triggers.ts"],
+      "firebase-functions/params": ["./src/shims/params.ts"]
+    }
+  },
+  "include": ["src"]
+}

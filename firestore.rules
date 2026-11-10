@@ -1,0 +1,165 @@
+rules_version = '2';
+
+// PayPilot security model
+// ───────────────────────
+// • Everything business-related lives under organizations/{orgId}/… and is
+//   readable only by ACTIVE members holding the relevant permission.
+// • Permissions are denormalized onto members/{uid}.permissions by Cloud
+//   Functions; clients can never write members, roles or permissions.
+// • Records that come from PayPal, money movement, AI, approvals, sync,
+//   webhooks, files and audit logs are SERVER-WRITE-ONLY.
+// • Clients may write only internal records (customers, products, invoice
+//   drafts, expenses, automations, tasks, notification read-state), with
+//   field-level validation. Nothing is ever hard-deleted from the client.
+// • Credentials (organizations/{orgId}/private/*) are never readable.
+// • Demo Mode data never touches Firestore at all.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function memberDoc(orgId) { return get(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)); }
+    function isMember(orgId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid))
+        && memberDoc(orgId).data.status == 'active';
+    }
+    function can(orgId, p) { return isMember(orgId) && p in memberDoc(orgId).data.permissions; }
+
+    function nonEmpty(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
+    function money(v) { return v is int && v >= 0 && v <= 100000000000; }
+    function currency(v) { return v is string && v.matches('^[A-Z]{3}$'); }
+    function isoDate(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}.*'); }
+
+    // Fields only the server may set or change.
+    function immutableOn(update) {
+      return !update.diff(resource.data).affectedKeys().hasAny(['orgId', 'source', 'externalId', 'environment', 'createdAt', 'createdBy']);
+    }
+    function baseCreate(orgId) {
+      let d = request.resource.data;
+      return d.orgId == orgId && d.source == 'manual' && d.createdBy == request.auth.uid
+        && isoDate(d.createdAt) && isoDate(d.updatedAt) && d.archivedAt == null
+        && !('externalId' in d) && !('environment' in d);
+    }
+    function softDeleteOnly() {
+      // archivedAt may be set but not cleared by clients
+      return !('archivedAt' in request.resource.data) || request.resource.data.archivedAt == null
+        || (request.resource.data.archivedAt is string);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false; // orgs list is maintained by Cloud Functions
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isMember(orgId);
+      allow write: if false; // updateOrganization callable
+
+      match /members/{uid} { allow read: if isMember(orgId); allow write: if false; }
+      match /roles/{roleId} { allow read: if isMember(orgId); allow write: if false; }
+      match /private/{doc} { allow read, write: if false; }
+      match /paypalConnections/{env} { allow read: if isMember(orgId); allow write: if false; }
+
+      // ── Server-written data ──
+      match /transactions/{id} { allow read: if can(orgId, 'transactions.view'); allow write: if false; }
+      match /subscriptions/{id} { allow read: if can(orgId, 'subscriptions.view'); allow write: if false; }
+      match /paymentLinks/{id} { allow read: if can(orgId, 'paymentLinks.view'); allow write: if false; }
+      match /automationRuns/{id} { allow read: if can(orgId, 'automations.view'); allow write: if false; }
+      match /aiConversations/{id} { allow read: if can(orgId, 'ai.use'); allow write: if false; }
+      match /aiActions/{id} { allow read: if isMember(orgId); allow write: if false; }
+      match /analytics/{id} { allow read: if can(orgId, 'reports.view'); allow write: if false; }
+      match /exchangeRates/{id} { allow read: if can(orgId, 'reports.view'); allow write: if false; }
+      match /files/{id} { allow read: if can(orgId, 'expenses.view') || can(orgId, 'invoices.view'); allow write: if false; }
+      match /emailLogs/{id} { allow read: if can(orgId, 'invoices.view'); allow write: if false; }
+      match /activityLogs/{id} { allow read: if can(orgId, 'settings.manage') || can(orgId, 'users.manage'); allow write: if false; }
+      match /syncHistory/{id} { allow read: if can(orgId, 'transactions.view') || can(orgId, 'integrations.manage'); allow write: if false; }
+      match /webhookEvents/{id} { allow read: if can(orgId, 'integrations.manage'); allow write: if false; }
+
+      // ── Client-writable internal records ──
+      match /customers/{id} {
+        allow read: if can(orgId, 'customers.view');
+        allow create: if can(orgId, 'customers.edit') && baseCreate(orgId)
+          && nonEmpty(request.resource.data.name, 120) && nonEmpty(request.resource.data.email, 254)
+          && request.resource.data.tags is list && request.resource.data.tags.size() <= 10;
+        allow update: if can(orgId, 'customers.edit') && immutableOn(request.resource.data) && softDeleteOnly()
+          && nonEmpty(request.resource.data.name, 120) && nonEmpty(request.resource.data.email, 254);
+        allow delete: if false;
+      }
+
+      match /products/{id} {
+        allow read: if can(orgId, 'products.view');
+        allow create: if can(orgId, 'products.edit') && baseCreate(orgId)
+          && nonEmpty(request.resource.data.name, 120) && money(request.resource.data.price) && currency(request.resource.data.currency)
+          && request.resource.data.taxRate is number && request.resource.data.taxRate >= 0 && request.resource.data.taxRate <= 50;
+        allow update: if can(orgId, 'products.edit') && immutableOn(request.resource.data) && softDeleteOnly()
+          && money(request.resource.data.price) && currency(request.resource.data.currency);
+        allow delete: if false;
+      }
+
+      match /invoices/{id} {
+        allow read: if can(orgId, 'invoices.view');
+        // Clients create drafts only; sending happens in the sendInvoice function.
+        allow create: if can(orgId, 'invoices.edit') && baseCreate(orgId)
+          && request.resource.data.status == 'draft'
+          && nonEmpty(request.resource.data.number, 40) && currency(request.resource.data.currency)
+          && request.resource.data.lines is list && request.resource.data.lines.size() > 0 && request.resource.data.lines.size() <= 100
+          && request.resource.data.payments.size() == 0;
+        // Edits: drafts stay drafts; a client can cancel, or record manual payments on sent invoices.
+        // A client can never move a draft to "sent" — that requires the server.
+        allow update: if can(orgId, 'invoices.edit') && immutableOn(request.resource.data) && softDeleteOnly()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['number'])
+          && (
+            (resource.data.status == 'draft' && request.resource.data.status in ['draft', 'cancelled'])
+            || (resource.data.status != 'draft' && request.resource.data.status in ['sent', 'partially_paid', 'paid', 'overdue', 'cancelled']
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['lines', 'currency', 'customerId', 'discount']))
+          );
+        allow delete: if false;
+      }
+
+      match /expenses/{id} {
+        allow read: if can(orgId, 'expenses.view');
+        allow create: if can(orgId, 'expenses.edit') && baseCreate(orgId)
+          && nonEmpty(request.resource.data.name, 120) && money(request.resource.data.amount) && request.resource.data.amount > 0
+          && currency(request.resource.data.currency) && isoDate(request.resource.data.date)
+          && money(request.resource.data.taxAmount) && request.resource.data.taxAmount <= request.resource.data.amount
+          && !('reporting' in request.resource.data && request.resource.data.reporting != null);
+        // `reporting` (FX conversion) is written by the convertExpense function only.
+        allow update: if can(orgId, 'expenses.edit') && immutableOn(request.resource.data) && softDeleteOnly()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reporting'])
+          && money(request.resource.data.amount) && currency(request.resource.data.currency);
+        allow delete: if false;
+      }
+
+      match /automations/{id} {
+        allow read: if can(orgId, 'automations.view');
+        allow create: if can(orgId, 'automations.configure') && baseCreate(orgId)
+          && nonEmpty(request.resource.data.name, 80)
+          && request.resource.data.runCount == 0 && request.resource.data.errorCount == 0
+          && request.resource.data.actions is list && request.resource.data.actions.size() <= 10
+          && request.resource.data.conditions is list && request.resource.data.conditions.size() <= 10;
+        allow update: if can(orgId, 'automations.configure') && immutableOn(request.resource.data) && softDeleteOnly()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['runCount', 'errorCount', 'lastRunAt']);
+        allow delete: if false;
+      }
+
+      match /tasks/{id} {
+        allow read: if isMember(orgId);
+        allow create: if isMember(orgId) && baseCreate(orgId) && nonEmpty(request.resource.data.title, 200);
+        allow update: if isMember(orgId) && immutableOn(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'updatedBy', 'archivedAt']);
+        allow delete: if false;
+      }
+
+      match /notifications/{id} {
+        allow read: if can(orgId, 'notifications.view');
+        allow update: if can(orgId, 'notifications.view')
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'updatedAt', 'updatedBy'])
+          && request.resource.data.read is bool;
+        allow create, delete: if false;
+      }
+    }
+
+    // Everything else (invites, rate limits, AI audit) is server-only.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

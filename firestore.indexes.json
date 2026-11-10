@@ -1,0 +1,14 @@
+{
+  "indexes": [
+    { "collectionGroup": "automations", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "trigger.type", "order": "ASCENDING" }, { "fieldPath": "enabled", "order": "ASCENDING" }] }
+  ],
+  "fieldOverrides": [
+    { "collectionGroup": "paypalConnections", "fieldPath": "status", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }] },
+    { "collectionGroup": "webhookEvents", "fieldPath": "status", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }] },
+    { "collectionGroup": "webhookEvents", "fieldPath": "payload", "indexes": [] },
+    { "collectionGroup": "aiConversations", "fieldPath": "messages", "indexes": [] },
+    { "collectionGroup": "transactions", "fieldPath": "updatedAt", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "DESCENDING", "queryScope": "COLLECTION" }, { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }] },
+    { "collectionGroup": "customers", "fieldPath": "updatedAt", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "DESCENDING", "queryScope": "COLLECTION" }, { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }] },
+    { "collectionGroup": "expenses", "fieldPath": "updatedAt", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }, { "order": "DESCENDING", "queryScope": "COLLECTION" }, { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }] }
+  ]
+}

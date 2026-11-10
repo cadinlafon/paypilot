@@ -1,0 +1,103 @@
+// End-to-end API test against LOCAL emulators + `npm --prefix worker run dev` (FIRESTORE_EMULATOR_HOST set in worker/.dev.vars). Run: npm run test:e2e
+const AUTH = "http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1";
+const FS = "http://127.0.0.1:8080/v1/projects/paypilot-afc59/databases/(default)/documents";
+const API = "http://127.0.0.1:8787/api/call";
+const j = (r) => r.json();
+const email = `owner${Date.now()}@test.local`, pw = "Test-" + crypto.randomUUID();
+const su = await fetch(`${AUTH}/accounts:signUp?key=fake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password: pw, displayName: "Test Owner", returnSecureToken: true }) }).then(j);
+await fetch("http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/projects/paypilot-afc59/accounts:update", { method: "POST", headers: { Authorization: "Bearer owner", "Content-Type": "application/json" }, body: JSON.stringify({ localId: su.localId, emailVerified: true }) });
+const si = await fetch(`${AUTH}/accounts:signInWithPassword?key=fake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password: pw, returnSecureToken: true }) }).then(j);
+const tok = si.idToken, uid = si.localId;
+const call = async (name, data) => {
+  const r = await fetch(`${API}/${name}`, { signal: AbortSignal.timeout(30000), method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` }, body: JSON.stringify({ data }) });
+  return { status: r.status, ...(await r.json()) };
+};
+const fsUser = (method, path, body) => fetch(`${FS}/${path}`, { method, headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" }, body: body && JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+const val = (v) => typeof v === "string" ? { stringValue: v } : typeof v === "number" ? { integerValue: String(v) } : v === null ? { nullValue: null } : Array.isArray(v) ? { arrayValue: { values: v.map(val) } } : typeof v === "boolean" ? { booleanValue: v } : { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, val(x)])) } };
+const fields = (o) => ({ fields: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, val(v)])) });
+const admin = (path) => fetch(`${FS}/${path}`, { headers: { Authorization: "Bearer owner" } }).then(j);
+const adminList = (path) => fetch(`${FS}/${path}?pageSize=50`, { headers: { Authorization: "Bearer owner" } }).then(j).then((x) => x.documents ?? []);
+const S = (d, f) => d.fields?.[f]?.stringValue ?? d.fields?.[f]?.integerValue;
+let pass = 0, fail = 0;
+const t = (name, ok, detail = "") => { ok ? pass++ : fail++; console.log(ok ? "  ✓" : "  ✗", name, ok ? "" : JSON.stringify(detail).slice(0, 300)); };
+
+console.log("Organizations & permissions");
+const created = await call("createOrganization", { name: "Test Studio", businessType: "Agency", reportingCurrency: "USD", timezone: "America/Los_Angeles" });
+t("createOrganization", created.status === 200 && created.result?.orgId, created);
+const orgId = created.result.orgId;
+const member = await admin(`organizations/${orgId}/members/${uid}`);
+t("owner membership written with permissions", S(member, "roleId") === "owner" && member.fields.permissions.arrayValue.values.length > 20, member);
+const userDoc = await admin(`users/${uid}`);
+t("user org list updated", JSON.stringify(userDoc).includes(orgId));
+t("updateOrganization", (await call("updateOrganization", { orgId, patch: { settings: { syncInterval: "6h" } } })).status === 200);
+t("rejects bad timezone", (await call("updateOrganization", { orgId, patch: { timezone: "Mars/Base" } })).status === 400);
+t("non-member org blocked", (await call("updateOrganization", { orgId: "someoneElsesOrg1", patch: {} })).status === 403);
+t("inviteMember", (await call("inviteMember", { orgId, email: "teammate@test.local", roleId: "accountant" })).status === 200);
+t("cannot invite as owner", (await call("inviteMember", { orgId, email: "x@test.local", roleId: "owner" })).status === 400);
+t("saveRole (custom)", (await call("saveRole", { orgId, role: { id: "custom_ops", name: "Ops", description: "", permissions: ["transactions.view", "bogus.perm"] } })).status === 200);
+const role = await admin(`organizations/${orgId}/roles/custom_ops`);
+t("custom role drops invalid permissions", role.fields.permissions.arrayValue.values.length === 1, role);
+
+console.log("Integrations degrade honestly without keys");
+const st = await call("integrationStatus", { orgId });
+t("integrationStatus", st.status === 200 && st.result.openrouter.configured === false && st.result.emailjs.configured === false && st.result.b2.configured === false, st);
+t("exchange-rate provider reachable", st.result?.fx?.ok === true, st.result?.fx);
+const ai = await call("aiChat", { orgId, message: "How is revenue?" });
+t("AI refuses cleanly without OpenRouter key", ai.status === 400 && /OPENROUTER_API_KEY/.test(ai.error?.message), ai);
+const link = await call("createPaymentLink", { orgId, description: "Deposit", amount: 5000, currency: "USD" });
+t("payment link requires PayPal", link.status === 400 && /Connect PayPal/.test(link.error?.message), link);
+const sync = await call("paypalSyncNow", { orgId, kind: "manual" });
+t("sync requires PayPal", sync.status === 400, sync);
+const conn = await call("paypalConnect", { orgId, environment: "sandbox", clientId: "A".repeat(30), clientSecret: "B".repeat(30) });
+t("PayPal connect verifies credentials with PayPal (fake creds rejected)", conn.status === 400 && /rejected/.test(conn.error?.message), conn);
+t("PayPal Live refused", (await call("paypalConnect", { orgId, environment: "live", clientId: "A".repeat(30), clientSecret: "B".repeat(30) })).status === 400);
+const up = await call("uploadFile", { orgId, name: "r.pdf", contentType: "application/pdf", size: 10, purpose: "receipt", data: btoa("%PDF-1.4 test") });
+t("upload requires B2", up.status === 400 && /storage/.test(up.error?.message), up);
+const badUp = await call("uploadFile", { orgId, name: "evil.exe", contentType: "application/x-msdownload", size: 10, purpose: "receipt", data: btoa("MZ") });
+t("upload rejects disallowed type", badUp.status === 400, badUp);
+
+console.log("Client writes + change sweeper (replaces Firestore triggers)");
+const now = new Date().toISOString();
+const cust = await fsUser("POST", `organizations/${orgId}/customers`, fields({ orgId, source: "manual", createdBy: uid, createdAt: now, updatedAt: now, archivedAt: null, name: "Ada Lovelace", email: "ada@test.local", tags: [] }));
+t("client creates customer (rules allow)", cust.status === 200, cust);
+const exp = await fsUser("POST", `organizations/${orgId}/expenses`, fields({ orgId, source: "manual", createdBy: uid, createdAt: now, updatedAt: now, archivedAt: null, name: "Conference", amount: 50000, currency: "EUR", date: "2026-10-01", taxAmount: 0, category: "Travel", vendor: "Config", taxDeductible: true, paymentSource: "card" }));
+t("client creates EUR expense", exp.status === 200, exp);
+const auto = await fsUser("POST", `organizations/${orgId}/automations`, fields({ orgId, source: "manual", createdBy: uid, createdAt: now, updatedAt: now, archivedAt: null, name: "Welcome", description: "", enabled: true, testMode: false, runCount: 0, errorCount: 0, trigger: { type: "new_customer", config: {} }, conditions: [], actions: [{ id: "a1", type: "send_email", config: { to: "{{email}}", subject: "Welcome", body: "Hi {{customerName}}" } }, { id: "a2", type: "create_task", config: { title: "Call {{customerName}}", dueInDays: "2" } }] }));
+t("client creates automation", auto.status === 200, auto);
+// first sweep initializes the checkpoint; records created after that are processed
+await call("sweepNow", {});
+const cust2 = await fsUser("POST", `organizations/${orgId}/customers`, fields({ orgId, source: "manual", createdBy: uid, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archivedAt: null, name: "Grace Hopper", email: "grace@test.local", tags: [] }));
+const exp2 = await fsUser("POST", `organizations/${orgId}/expenses`, fields({ orgId, source: "manual", createdBy: uid, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archivedAt: null, name: "Hotel", amount: 30000, currency: "EUR", date: "2026-10-02", taxAmount: 0, category: "Travel", vendor: "Hotel", taxDeductible: true, paymentSource: "card" }));
+const sw = await call("sweepNow", {});
+t("sweepNow", sw.status === 200, sw);
+const notes = await adminList(`organizations/${orgId}/notifications`);
+t("new customer → notification", notes.some((n) => /Grace Hopper/.test(S(n, "title") ?? "")), notes.map((n) => S(n, "title")));
+const approvals = await adminList(`organizations/${orgId}/aiActions`);
+t("automation queued email for APPROVAL (not sent)", approvals.some((a) => S(a, "status") === "pending" && S(a, "kind") === "send_email"), approvals.length);
+const tasks = await adminList(`organizations/${orgId}/tasks`);
+t("automation created internal task", tasks.some((x) => /Grace/.test(S(x, "title") ?? "")));
+const runs = await adminList(`organizations/${orgId}/automationRuns`);
+t("automation run logged as pending_approval", runs.some((r) => S(r, "status") === "pending_approval"), runs.map((r) => S(r, "status")));
+const e2 = await admin(exp2.body.name.split("/documents/")[1]);
+const rep = e2.fields?.reporting?.mapValue?.fields;
+t("EUR expense converted to USD with provider + rate", rep && rep.currency.stringValue === "USD" && Number(rep.amount.integerValue) > 30000 && /Frankfurter/.test(rep.provider.stringValue), e2.fields?.reporting);
+const sw2 = await call("sweepNow", {});
+const notes2 = await adminList(`organizations/${orgId}/notifications`);
+t("sweeper is idempotent (no duplicate notification)", sw2.status === 200 && notes2.filter((n) => /Grace Hopper/.test(S(n, "title") ?? "")).length === 1);
+
+console.log("Approvals");
+const pending = approvals.find((a) => S(a, "status") === "pending");
+const aid = pending.name.split("/").pop();
+const rej = await call("decideApproval", { orgId, id: aid, approve: false });
+t("reject approval", rej.status === 200 && /Nothing was executed/.test(rej.result.message), rej);
+t("cannot decide twice", (await call("decideApproval", { orgId, id: aid, approve: true })).status === 400);
+const runRes = await call("runAutomation", { orgId, automationId: auto.body.name.split("/").pop(), test: true });
+t("test run simulates and creates nothing", runRes.status === 200 && runRes.result.status === "test", runRes);
+
+console.log("Webhook security");
+const wh = await fetch(`http://127.0.0.1:8787/api/paypal/webhook?org=${orgId}&env=sandbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "X" } }) });
+t("unverified webhook rejected", wh.status === 401, wh.status);
+const pl = await fetch(`http://127.0.0.1:8787/api/pay/${orgId}/doesnotexist`, { redirect: "manual" });
+t("unknown payment link redirects to error page", pl.status === 302 && /status=error/.test(pl.headers.get("location") ?? ""), pl.headers.get("location"));
+
+console.log(`\n${pass} passed, ${fail} failed`);
