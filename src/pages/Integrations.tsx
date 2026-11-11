@@ -18,7 +18,7 @@ import { bytes, cn, errorMessage, relativeTime } from "@/lib/utils";
 
 interface ServerStatus {
   openrouter: { configured: boolean; defaultModel: string; allowedModels: string[] };
-  emailjs: { configured: boolean; serviceId?: string; publicKey?: string; templates: Record<string, string | undefined> };
+  emailjs: { configured: boolean; delivery?: "server" | "browser"; serviceId?: string; publicKey?: string; templates: Record<string, string | undefined> };
   b2: { configured: boolean; bucketName?: string };
   fx: { provider: string; ok: boolean; lastUpdate?: string; error?: string };
   paypal: { liveOnboardingEnabled: boolean; webhookUrl: string };
@@ -197,7 +197,7 @@ export default function Integrations() {
         <IntegrationCard icon={<Mail className="size-5 text-sky-300" />} title="EmailJS" subtitle="Invoice emails, reminders and notifications — only after approval." state={demo ? "demo" : status?.emailjs.configured ? "ok" : "off"} stateLabel={demo ? "Simulated in Demo" : status?.emailjs.configured ? "Connected" : "Not configured"}>
           <KV k="Service ID" v={status?.emailjs.serviceId ?? "—"} />
           <KV k="Public key" v={status?.emailjs.publicKey ? `${status.emailjs.publicKey.slice(0, 4)}…` : "—"} />
-          <KV k="Private key" v={demo ? "Not used" : status?.emailjs.configured ? "Stored as server secret" : "Missing"} />
+          <KV k="Sent from" v={demo ? "Not used" : status?.emailjs.delivery === "server" ? "Server (private key)" : "Your browser (public key)"} />
           {status && Object.entries(status.emailjs.templates).map(([k, v]) => <KV key={k} k={`Template · ${k}`} v={v ?? <span className="text-faint">not set</span>} />)}
           <div className="pt-2">
             <div className="text-xs text-faint mb-1">Sending history</div>

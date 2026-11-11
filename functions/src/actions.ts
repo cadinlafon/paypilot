@@ -7,7 +7,7 @@
  * Nothing in this file is reachable from AI tools or automations directly.
  */
 import { onCall, onRequest, HttpsError } from "firebase-functions/v2/https";
-import type { ApprovalRequest, EmailTemplateKey, Invoice, Organization, PaymentLink, Permission, Transaction, AutomationRun } from "../../shared/types";
+import type { ApprovalRequest, EmailLog, EmailTemplateKey, Invoice, Organization, PaymentLink, Permission, Transaction, AutomationRun } from "../../shared/types";
 import { computeInvoiceTotals, formatMoney, lineAmount } from "../../shared/money";
 import { db, orgCol, orgRef, nowIso } from "./lib/admin";
 import { requireMember, rateLimit, str, int, safeError, EMAIL, CURRENCY, ID } from "./lib/guard";
@@ -15,10 +15,10 @@ import { audit } from "./lib/audit";
 import { APP_BASE_URL, CREDENTIALS_ENCRYPTION_KEY, EMAILJS_PRIVATE_KEY, apiBase } from "./lib/params";
 import { activeEnvironment, assertEnvironmentAllowed, connectionRef, paypal, PayPalApiError, toMinorStr, toValueStr } from "./paypal/client";
 import { txDocId, upsertTransactions } from "./paypal/records";
-import { sendAndLog } from "./email/emailjs";
+import { sendAndLog, type EmailHandoff } from "./email/emailjs";
 
 const SECRETS = [CREDENTIALS_ENCRYPTION_KEY, EMAILJS_PRIVATE_KEY];
-type Result = { ok: boolean; message: string };
+type Result = { ok: boolean; message: string; email?: EmailHandoff };
 
 function ppMessage(e: unknown): string {
   if (e instanceof PayPalApiError) {
@@ -114,14 +114,15 @@ export async function doCreatePaymentLink(orgId: string, actor: string, input: {
   return link;
 }
 
-export async function doSendEmail(orgId: string, actor: string, m: { to: string; toName?: string; subject: string; body: string; template: EmailTemplateKey; relatedType?: string; relatedId?: string }, approvalId?: string): Promise<Result> {
+export async function doSendEmail(orgId: string, actor: string, m: { to: string; toName?: string; subject: string; body: string; template: EmailTemplateKey; relatedType?: string; relatedId?: string }, approvalId?: string, uid?: string): Promise<Result> {
   const org = (await orgRef(orgId).get()).data() as Organization;
-  const log = await sendAndLog(orgId, { ...m, fromName: org.name, replyTo: org.email }, { relatedType: m.relatedType, relatedId: m.relatedId, approvalId });
+  const { log, handoff } = await sendAndLog(orgId, { ...m, fromName: org.name, replyTo: org.email }, { relatedType: m.relatedType, relatedId: m.relatedId, approvalId, uid });
+  if (handoff) return { ok: true, message: `Sending email to ${m.to}…`, email: handoff };
   await audit(orgId, actor, log.status === "sent" ? "Sent email" : "Email failed", m.to, m.subject);
   return log.status === "sent" ? { ok: true, message: `Email sent to ${m.to}.` } : { ok: false, message: log.error ?? "Email failed." };
 }
 
-export async function doSendInvoice(orgId: string, actor: string, invoiceId: string): Promise<Result> {
+export async function doSendInvoice(orgId: string, actor: string, invoiceId: string, uid?: string): Promise<Result> {
   const ref = orgCol(orgId, "invoices").doc(invoiceId);
   const inv = (await ref.get()).data() as Invoice | undefined;
   if (!inv) return { ok: false, message: "Invoice not found." };
@@ -165,7 +166,12 @@ export async function doSendInvoice(orgId: string, actor: string, invoiceId: str
     body: `Hi ${inv.customerName.split(" ")[0]},\n\nPlease find invoice ${inv.number} below.\n\n${lines}\n\nTotal: ${formatMoney(totals.total, inv.currency)}\nDue: ${inv.dueDate}\n\n${inv.notes}\n\n${org.name}`,
     relatedType: "invoice",
     relatedId: invoiceId,
-  });
+  }, undefined, uid);
+  // Browser delivery: confirmEmail updates the invoice once the email actually went out.
+  if (r.email) {
+    await ref.update({ totals, history, updatedAt: nowIso() });
+    return r;
+  }
   if (r.ok) history.push({ at: nowIso(), event: `Emailed to ${inv.customerEmail}`, by: actor });
   await ref.update({ status: r.ok && inv.status === "draft" ? "sent" : inv.status, totals, history, updatedAt: nowIso() });
   return r;
@@ -232,7 +238,7 @@ export const sendInvoice = onCall({ secrets: SECRETS }, async (req) => {
   try {
     const c = await requireMember(req, "invoices.send");
     await rateLimit(`sendinv_${c.uid}`, 60, 3600);
-    return await doSendInvoice(c.orgId, c.email, str(req.data?.invoiceId, "Invoice", { pattern: ID }));
+    return await doSendInvoice(c.orgId, c.email, str(req.data?.invoiceId, "Invoice", { pattern: ID }), c.uid);
   } catch (e) {
     throw safeError(e);
   }
@@ -245,7 +251,41 @@ export const requestEmail = onCall({ secrets: SECRETS }, async (req) => {
     await rateLimit(`email_${c.uid}`, 60, 3600);
     const d = req.data ?? {};
     const template = (["invoice", "reminder", "customer", "business", "automation"].includes(d.template) ? d.template : "customer") as EmailTemplateKey;
-    return await doSendEmail(c.orgId, c.email, { to: str(d.to, "Recipient", { pattern: EMAIL, max: 254 }), toName: d.toName ? str(d.toName, "Name", { max: 120 }) : undefined, subject: str(d.subject, "Subject", { min: 1, max: 200 }), body: str(d.body, "Body", { min: 1, max: 10_000 }), template, relatedType: d.relatedType, relatedId: d.relatedId });
+    return await doSendEmail(c.orgId, c.email, { to: str(d.to, "Recipient", { pattern: EMAIL, max: 254 }), toName: d.toName ? str(d.toName, "Name", { max: 120 }) : undefined, subject: str(d.subject, "Subject", { min: 1, max: 200 }), body: str(d.body, "Body", { min: 1, max: 10_000 }), template, relatedType: d.relatedType, relatedId: d.relatedId }, undefined, c.uid);
+  } catch (e) {
+    throw safeError(e);
+  }
+});
+
+/**
+ * The browser reports whether it delivered a queued email. Only the user it was
+ * handed to can confirm it, and only once.
+ */
+export const confirmEmail = onCall(async (req) => {
+  try {
+    const c = await requireMember(req, "invoices.send");
+    const id = str(req.data?.id, "Email", { pattern: ID });
+    const ok = req.data?.ok === true;
+    const error = ok ? undefined : str(req.data?.error ?? "Email couldn't be sent.", "Error", { max: 300 });
+    const ref = orgCol(c.orgId, "emailLogs").doc(id);
+    const log = await db.runTransaction(async (tx) => {
+      const s = await tx.get(ref);
+      const l = s.data() as EmailLog | undefined;
+      if (!l || l.status !== "queued" || l.queuedBy !== c.uid) throw new HttpsError("failed-precondition", "This email was already handled.");
+      tx.update(ref, ok ? { status: "sent" } : { status: "failed", error });
+      return l;
+    });
+    await audit(c.orgId, c.email, ok ? "Sent email" : "Email failed", log.to, log.subject);
+    if (log.relatedType === "invoice" && log.relatedId) {
+      const invRef = orgCol(c.orgId, "invoices").doc(log.relatedId);
+      const inv = (await invRef.get()).data() as Invoice | undefined;
+      if (inv) {
+        const entry = ok ? { at: nowIso(), event: `Emailed to ${log.to}`, by: c.email } : { at: nowIso(), event: `Email to ${log.to} failed: ${error}`, by: "system" };
+        await invRef.update({ status: ok && inv.status === "draft" ? "sent" : inv.status, history: [...inv.history, entry], updatedAt: nowIso() });
+      }
+    }
+    if (log.approvalId) await orgCol(c.orgId, "aiActions").doc(log.approvalId).update(ok ? { status: "executed", result: `Email sent to ${log.to}.` } : { status: "failed", result: `Email failed: ${error}` });
+    return { ok: true };
   } catch (e) {
     throw safeError(e);
   }
@@ -287,10 +327,10 @@ export const decideApproval = onCall({ secrets: SECRETS }, async (req) => {
     let r: Result;
     switch (a.kind) {
       case "send_email":
-        r = await doSendEmail(c.orgId, c.email, { to: str(p.to, "Recipient", { pattern: EMAIL }), toName: p.toName, subject: String(p.subject).slice(0, 200), body: String(p.body).slice(0, 10_000), template: p.template ?? "customer", relatedType: p.relatedType, relatedId: p.relatedId }, a.id);
+        r = await doSendEmail(c.orgId, c.email, { to: str(p.to, "Recipient", { pattern: EMAIL }), toName: p.toName, subject: String(p.subject).slice(0, 200), body: String(p.body).slice(0, 10_000), template: p.template ?? "customer", relatedType: p.relatedType, relatedId: p.relatedId }, a.id, c.uid);
         break;
       case "send_invoice":
-        r = await doSendInvoice(c.orgId, c.email, String(p.invoiceId));
+        r = await doSendInvoice(c.orgId, c.email, String(p.invoiceId), c.uid);
         break;
       case "create_payment_link": {
         const l = await doCreatePaymentLink(c.orgId, c.email, { description: String(p.description).slice(0, 127), amount: Number(p.amount), currency: String(p.currency), customerId: p.customerId });

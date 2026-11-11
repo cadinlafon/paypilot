@@ -1,11 +1,18 @@
 /**
- * Email delivery behind a provider interface (EmailJS today). Sending happens
- * only from the server with the EmailJS private key, and only after an
- * explicit human action or approval.
+ * Email delivery behind a provider interface (EmailJS today). Every send
+ * follows an explicit human action or approval.
  *
- * EmailJS setup: Account → Security → enable "Allow EmailJS API for non-browser
- * applications". Each template should use {{to_email}}, {{to_name}},
- * {{subject}}, {{message}}, {{from_name}}, {{reply_to}}.
+ * Two delivery modes:
+ *  - Browser (default, same as centre-floor-app): the server checks
+ *    permissions, writes the email and logs it as "queued", then hands it to
+ *    the signed-in user's browser, which sends it with the EmailJS public key
+ *    and reports back via `confirmEmail`. No private key or EmailJS settings
+ *    change needed.
+ *  - Server: when EMAILJS_PRIVATE_KEY is set (and "Allow EmailJS API for
+ *    non-browser applications" is on), the server sends directly.
+ *
+ * Each template should use {{to_email}}, {{to_name}}, {{subject}},
+ * {{message}}, {{from_name}}, {{reply_to}}.
  */
 import type { EmailLog, EmailTemplateKey } from "../../../shared/types";
 import { orgCol, nowIso } from "../lib/admin";
@@ -35,11 +42,24 @@ const TEMPLATE: Record<EmailTemplateKey, () => string> = {
   automation: () => P.EMAILJS_TEMPLATE_AUTOMATION.value(),
 };
 
+const templateFor = (k: EmailTemplateKey) => TEMPLATE[k]() || TEMPLATE.customer();
+const paramsFor = (m: EmailMessage) => ({ to_email: m.to, to_name: m.toName ?? "", subject: m.subject, message: m.body, from_name: m.fromName, reply_to: m.replyTo ?? "" });
+const serverDelivery = () => !!P.secretValue(P.EMAILJS_PRIVATE_KEY);
+
+/** What the browser needs to send a queued email itself. All values are public except the content. */
+export interface EmailHandoff {
+  logId: string;
+  serviceId: string;
+  templateId: string;
+  publicKey: string;
+  params: Record<string, string>;
+}
+
 export const emailjs: EmailProvider = {
   id: "emailjs",
-  configured: () => !!(P.EMAILJS_SERVICE_ID.value() && P.EMAILJS_PUBLIC_KEY.value() && P.secretValue(P.EMAILJS_PRIVATE_KEY)),
+  configured: () => !!(P.EMAILJS_SERVICE_ID.value() && P.EMAILJS_PUBLIC_KEY.value() && TEMPLATE.customer()),
   async send(m) {
-    const templateId = TEMPLATE[m.template]() || TEMPLATE.customer();
+    const templateId = templateFor(m.template);
     if (!templateId) throw new Error(`No EmailJS template configured for “${m.template}”.`);
     const res = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
       method: "POST",
@@ -49,7 +69,7 @@ export const emailjs: EmailProvider = {
         template_id: templateId,
         user_id: P.EMAILJS_PUBLIC_KEY.value(),
         accessToken: P.secretValue(P.EMAILJS_PRIVATE_KEY),
-        template_params: { to_email: m.to, to_name: m.toName ?? "", subject: m.subject, message: m.body, from_name: m.fromName, reply_to: m.replyTo ?? "" },
+        template_params: paramsFor(m),
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -59,20 +79,34 @@ export const emailjs: EmailProvider = {
 
 export const emailProvider = (): EmailProvider => emailjs;
 
-/** Send and log. Never throws for delivery failures — returns the log so callers can report. */
-export async function sendAndLog(orgId: string, m: EmailMessage, meta: { relatedType?: string; relatedId?: string; approvalId?: string }): Promise<EmailLog> {
+/**
+ * Send (server mode) or queue for the browser (browser mode), and log it.
+ * Never throws for delivery failures — returns the log so callers can report.
+ */
+export async function sendAndLog(orgId: string, m: EmailMessage, meta: { relatedType?: string; relatedId?: string; approvalId?: string; uid?: string }): Promise<{ log: EmailLog; handoff?: EmailHandoff }> {
   const ref = orgCol(orgId, "emailLogs").doc();
-  const log: EmailLog = { id: ref.id, orgId, to: m.to, subject: m.subject, template: m.template, status: "sent", relatedType: meta.relatedType, relatedId: meta.relatedId, approvalId: meta.approvalId, createdAt: nowIso() };
+  const log: EmailLog = { id: ref.id, orgId, to: m.to, subject: m.subject, template: m.template, status: "sent", createdAt: nowIso() };
+  if (meta.relatedType) log.relatedType = meta.relatedType;
+  if (meta.relatedId) log.relatedId = meta.relatedId;
+  if (meta.approvalId) log.approvalId = meta.approvalId;
   const p = emailProvider();
+  let handoff: EmailHandoff | undefined;
   try {
-    if (!p.configured()) throw new Error("Email isn't configured (EmailJS service, public key, private key).");
-    await p.send(m);
+    if (!p.configured()) throw new Error("Email isn't configured (EmailJS service ID, public key and template).");
+    if (serverDelivery()) {
+      await p.send(m);
+    } else {
+      if (!meta.uid) throw new Error("Email can only be sent from the app.");
+      log.status = "queued";
+      log.queuedBy = meta.uid;
+      handoff = { logId: ref.id, serviceId: P.EMAILJS_SERVICE_ID.value(), templateId: templateFor(m.template), publicKey: P.EMAILJS_PUBLIC_KEY.value(), params: paramsFor(m) };
+    }
   } catch (e) {
     log.status = "failed";
     log.error = (e as Error).message.slice(0, 300);
   }
   await ref.set(log);
-  return log;
+  return { log, handoff };
 }
 
 export const EMAIL_SECRETS = [P.EMAILJS_PRIVATE_KEY];

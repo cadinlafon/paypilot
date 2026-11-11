@@ -22,7 +22,7 @@ export function Badge({ tone = "neutral", children, className, dot }: { tone?: T
 
 const STATUS_TONE: Record<string, Tone> = {
   completed: "green", paid: "green", active: "green", success: "green", executed: "green", sent: "blue", connected: "green", processed: "green",
-  pending: "amber", authorized: "violet", partially_paid: "amber", partially_refunded: "amber", trialing: "blue", pending_approval: "amber", partial: "amber", test: "violet", simulated: "violet", running: "blue",
+  pending: "amber", authorized: "violet", partially_paid: "amber", partially_refunded: "amber", trialing: "blue", pending_approval: "amber", partial: "amber", test: "violet", simulated: "violet", running: "blue", queued: "blue",
   failed: "red", denied: "red", overdue: "red", past_due: "red", error: "red", rejected: "red",
   draft: "neutral", cancelled: "neutral", refunded: "neutral", voided: "neutral", expired: "neutral", disabled: "neutral", paused: "neutral", archived: "neutral", skipped: "neutral", ignored: "neutral", open: "blue", done: "green",
 };

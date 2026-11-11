@@ -40,7 +40,7 @@ t("custom role drops invalid permissions", role.fields.permissions.arrayValue.va
 
 console.log("Integrations degrade honestly without keys");
 const st = await call("integrationStatus", { orgId });
-t("integrationStatus", st.status === 200 && st.result.openrouter.configured === false && st.result.emailjs.configured === false && st.result.b2.configured === false, st);
+t("integrationStatus", st.status === 200 && st.result.openrouter.configured === false && st.result.emailjs.delivery === "browser" && st.result.b2.configured === false, st);
 t("exchange-rate provider reachable", st.result?.fx?.ok === true, st.result?.fx);
 const ai = await call("aiChat", { orgId, message: "How is revenue?" });
 t("AI refuses cleanly without OpenRouter key", ai.status === 400 && /OPENROUTER_API_KEY/.test(ai.error?.message), ai);
@@ -93,6 +93,15 @@ t("reject approval", rej.status === 200 && /Nothing was executed/.test(rej.resul
 t("cannot decide twice", (await call("decideApproval", { orgId, id: aid, approve: true })).status === 400);
 const runRes = await call("runAutomation", { orgId, automationId: auto.body.name.split("/").pop(), test: true });
 t("test run simulates and creates nothing", runRes.status === 200 && runRes.result.status === "test", runRes);
+
+console.log("Email (browser delivery)");
+const em = await call("requestEmail", { orgId, to: "ada@test.local", subject: "Hello", body: "Test body", template: "customer" });
+const h = em.result?.email;
+t("requestEmail hands the email to the browser", em.status === 200 && h?.logId && h.params.to_email === "ada@test.local" && h.params.message === "Test body" && h.serviceId && h.publicKey, em);
+t("email logged as queued", S(await admin(`organizations/${orgId}/emailLogs/${h?.logId}`), "status") === "queued");
+t("confirmEmail records the outcome", (await call("confirmEmail", { orgId, id: h?.logId, ok: false, error: "test failure" })).status === 200);
+t("email log updated", S(await admin(`organizations/${orgId}/emailLogs/${h?.logId}`), "status") === "failed");
+t("confirmEmail only once", (await call("confirmEmail", { orgId, id: h?.logId, ok: true })).status === 400);
 
 console.log("Webhook security");
 const wh = await fetch(`http://127.0.0.1:8787/api/paypal/webhook?org=${orgId}&env=sandbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "X" } }) });

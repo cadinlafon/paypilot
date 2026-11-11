@@ -159,7 +159,7 @@ firebase emulators:start --only auth,firestore     # terminal 1
 cp worker/.dev.vars.example worker/.dev.vars       # set FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 + a CREDENTIALS_ENCRYPTION_KEY
 npm --prefix worker run dev                        # terminal 2 — API on :8787
 echo VITE_USE_EMULATORS=true > .env.local && npm run dev   # terminal 3 — app on :5320 (proxies /api)
-npm run test:e2e                                   # 34 end-to-end API checks
+npm run test:e2e                                   # 39 end-to-end API checks
 ```
 
 ### Deploy

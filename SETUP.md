@@ -42,25 +42,25 @@ Nemotron 3.5 Super (default), Nemotron 3.5 Lightning, Gemma 4 31B, Gemma 4 26B. 
 Free-model limits are set by OpenRouter (roughly 20 requests/minute and a daily cap that's higher once an account has bought credits); one assistant message can use several requests.
 Without it, Real Mode shows "AI isn't configured" (Demo Mode's simulated assistant still works).
 
-## 5. EmailJS (invoice emails, reminders, customer + automation emails) — free tier, optional
-PayPilot sends every email from the server through **one** EmailJS template; it fills in the subject and body itself.
+## 5. EmailJS (invoice emails, reminders, customer + automation emails) — ✅ configured, free tier
+Same approach as centre-floor-app: **emails are sent from the signed-in user's browser** with the EmailJS public key. No Cloud Functions, no private key, no EmailJS security changes.
+The server still decides *whether* an email may go out (permissions, approvals), writes it, and logs it; the browser just delivers it and reports back (log shows *queued* → *sent*/*failed*).
 
-1. https://www.emailjs.com → sign up → **Email Services → Add New Service** → connect the mailbox emails should come from (e.g. Gmail). Copy the **Service ID**.
-2. **Email Templates → Create New Template**, name it `PayPilot`, and set:
+Configured in `worker/wrangler.toml`: service `service_hhsy35q`, public key `CnFo1Rsdnl3BY9_uS`, template `template_r67co3i` (used for every email type).
+
+- [ ] Make sure template `template_r67co3i` uses these fields (EmailJS → Email Templates):
    | Template field | Value |
    |---|---|
    | Subject | `{{subject}}` |
-   | Content (HTML) | `<div style="white-space:pre-line">{{message}}</div>` |
+   | Content | `{{message}}` (in HTML mode: `<div style="white-space:pre-line">{{message}}</div>`) |
    | To Email | `{{to_email}}` |
    | From Name | `{{from_name}}` |
    | Reply To | `{{reply_to}}` |
-   | From Email | leave as the service default |
-   Save and copy the **Template ID**.
-3. **Account → General**: copy the **Public Key**. **Account → Security**: copy the **Private Key** and turn ON *Allow EmailJS API for non-browser applications*.
-4. In PayPilot **Settings → Organization**, set the **Business email** — customers' replies go there.
-5. Wiring (I can do this): `EMAILJS_SERVICE_ID`, `EMAILJS_PUBLIC_KEY`, `EMAILJS_TEMPLATE_CUSTOMER` in `wrangler.toml` (the other `EMAILJS_TEMPLATE_*` can stay empty — they fall back to this one), plus `npx wrangler secret put EMAILJS_PRIVATE_KEY`, then redeploy.
+- [ ] EmailJS → Account → Security → if *Domains allowlist* is used, add `paypilot.web.app` and `paypilot.cadinlafon.workers.dev`.
+- [ ] In PayPilot **Settings → Organization**, set the **Business email** — customers' replies go there.
+- Optional: to send from the server instead (no browser needed), turn on *Allow EmailJS API for non-browser applications* and run `npx wrangler secret put EMAILJS_PRIVATE_KEY` in `worker/`. PayPilot switches automatically.
 
-Emails PayPilot sends (all only after you click Send/Remind or approve a request): invoices (when PayPal Invoicing isn't connected), payment reminders, customer emails drafted by the AI (thank-yous, follow-ups), and "Send approved email" automation steps.
+Emails PayPilot sends (only after you click Send/Remind or approve a request): invoices (when PayPal Invoicing isn't connected — otherwise PayPal emails the invoice itself), payment reminders, customer emails drafted by the AI, and "Send email" automation steps once approved.
 
 ## 6. Backblaze B2 (receipts & documents) — free up to 10 GB, optional
 1. https://www.backblaze.com → B2 Cloud Storage → sign up.
@@ -79,6 +79,6 @@ Uses Frankfurter (free ECB reference rates, no key).
 |---|---|
 | PayPal | Syncing, payment links, refunds/captures, PayPal invoicing (manual records still work) |
 | OpenRouter | Real-Mode AI assistant and AI briefings |
-| EmailJS | Sending invoices/reminders/approved emails (drafts and approvals still work) |
+| EmailJS template fields | Emails arrive blank or to the wrong address |
 | Backblaze B2 | Receipt and document uploads |
 | Authorized domain | Google sign-in on the live site |

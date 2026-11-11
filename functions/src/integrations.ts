@@ -16,6 +16,7 @@ export const integrationStatus = onCall({ secrets: P.ALL_SECRETS }, async (req) 
       openrouter: { configured: !!P.secretValue(P.OPENROUTER_API_KEY), defaultModel: P.OPENROUTER_DEFAULT_MODEL.value(), allowedModels: P.OPENROUTER_ALLOWED_MODELS.value().split(",") },
       emailjs: {
         configured: emailjs.configured(),
+        delivery: P.secretValue(P.EMAILJS_PRIVATE_KEY) ? "server" : "browser",
         serviceId: P.EMAILJS_SERVICE_ID.value() || undefined,
         publicKey: P.EMAILJS_PUBLIC_KEY.value() || undefined,
         templates: { invoice: P.EMAILJS_TEMPLATE_INVOICE.value() || undefined, reminder: P.EMAILJS_TEMPLATE_REMINDER.value() || undefined, customer: P.EMAILJS_TEMPLATE_CUSTOMER.value() || undefined, business: P.EMAILJS_TEMPLATE_BUSINESS.value() || undefined, automation: P.EMAILJS_TEMPLATE_AUTOMATION.value() || undefined },

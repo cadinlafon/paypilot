@@ -581,8 +581,10 @@ export interface EmailLog {
   to: string;
   subject: string;
   template: EmailTemplateKey;
-  status: "sent" | "failed" | "simulated";
+  /** "queued": handed to the user's browser to send (EmailJS public key); becomes sent/failed when it reports back. */
+  status: "sent" | "failed" | "simulated" | "queued";
   error?: string;
+  queuedBy?: string;
   relatedType?: string;
   relatedId?: string;
   approvalId?: string;

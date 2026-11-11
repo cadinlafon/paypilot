@@ -12,6 +12,7 @@
     "test:e2e": "node tests/worker.e2e.mjs"
   },
   "dependencies": {
+    "@emailjs/browser": "^4.4.1",
     "clsx": "^2.1.1",
     "firebase": "^12.19.0",
     "jspdf": "^3.0.4",

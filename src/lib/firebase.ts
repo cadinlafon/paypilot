@@ -3,6 +3,7 @@ import { getAuth, connectAuthEmulator, type Auth } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator, type Firestore } from "firebase/firestore";
 import { getFunctions, connectFunctionsEmulator, httpsCallable, type Functions } from "firebase/functions";
 import { apiBaseUrl, backend, firebaseConfig, firebaseConfigured, functionsRegion, useEmulators } from "./config";
+import { deliverEmail, hasEmailHandoff } from "./email";
 
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
@@ -29,6 +30,13 @@ export { app, auth, db };
  * caller's organization membership and permissions on every call.
  */
 export async function callFn<Req, Res>(name: string, data: Req): Promise<Res> {
+  const result = await callRaw<Req, Res>(name, data);
+  // The server handed us an email to send from this browser (EmailJS public key).
+  if (hasEmailHandoff(result)) return (await deliverEmail(result, (d) => callRaw("confirmEmail", d))) as Res;
+  return result;
+}
+
+async function callRaw<Req, Res>(name: string, data: Req): Promise<Res> {
   if (!fns || !auth) throw new Error("Firebase is not configured. Add VITE_FIREBASE_* values to .env to enable Real Mode.");
   if (backend === "firebase") {
     const res = await httpsCallable<Req, Res>(fns, name, { timeout: 120_000 })(data);

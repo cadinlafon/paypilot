@@ -7,7 +7,7 @@ export { createOrganization, updateOrganization, inviteMember, claimInvites, upd
 export { paypalConnect, paypalDisconnect } from "./paypal/connect";
 export { paypalSyncNow, paypalScheduledSync, paypalNightlyReconciliation } from "./paypal/sync";
 export { paypalWebhook, retryFailedWebhooks } from "./paypal/webhooks";
-export { paypalRefund, paypalCapture, createPaymentLink, setPaymentLinkStatus, sendInvoice, requestEmail, decideApproval, payLink, payReturn } from "./actions";
+export { paypalRefund, paypalCapture, createPaymentLink, setPaymentLinkStatus, sendInvoice, requestEmail, confirmEmail, decideApproval, payLink, payReturn } from "./actions";
 export { uploadFile, getFileUrl } from "./storage/b2";
 export { aiChat } from "./ai/chat";
 export { onTransactionWritten, onCustomerCreated, automationScheduler, runAutomation, retryAutomationRun } from "./automations/engine";
